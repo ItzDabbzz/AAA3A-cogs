@@ -220,55 +220,60 @@ class DashboardRPC_CogManagement:
                 "status": 0,
                 "repos": [repo.name for repo in Downloader._repo_manager.repos],
             }
+
+        # Cache installed cogs once
+        installed_cogs = await Downloader.installed_cogs()
+        installed_cogs_by_repo = {}
+        for cog in installed_cogs:
+            installed_cogs_by_repo.setdefault(cog.repo_name, {})[cog.name] = cog
+
+        # Gather current commits in parallel
+        repos = sorted(Downloader._repo_manager.repos, key=lambda repo: repo.name.lower())
+        current_commits = await asyncio.gather(
+            *[repo.current_commit() for repo in repos]
+        )
+
+        repo_data = []
+        for repo, current_commit in zip(repos, current_commits):
+            repo_installed_cogs = installed_cogs_by_repo.get(repo.name, {})
+            available_cogs = {}
+            for cog in repo.available_cogs:
+                if cog.disabled:
+                    continue
+                installed = repo_installed_cogs.get(cog.name)
+                available_cogs[cog.name] = {
+                    "installed": installed is not None,
+                    "pinned": installed.pinned if installed else False,
+                    "hidden": cog.hidden,
+                    "short_description": cog.short,
+                    "description": cog.description,
+                    "author": humanize_list(cog.author) if cog.author else None,
+                    "tags": humanize_list([inline(tag) for tag in cog.tags]),
+                    "requirements": humanize_list([inline(req) for req in cog.requirements]),
+                    "end_user_data_statement": cog.end_user_data_statement,
+                }
+            repo_data.append({
+                "name": repo.name,
+                "url": repo.url,
+                "branch": repo.branch,
+                "author": humanize_list(repo.author) if repo.author else "Unknown",
+                "description": repo.description,
+                "current_commit": current_commit,
+                "available_cogs": dict(
+                    sorted(
+                        available_cogs.items(),
+                        key=lambda cog: (
+                            not cog[1]["installed"],
+                            cog[1]["hidden"],
+                            cog[0].lower(),
+                        ),
+                    )
+                ),
+            })
+
         return {
             "status": 0,
-            "repos": [
-                {
-                    "name": repo.name,
-                    "url": repo.url,
-                    "branch": repo.branch,
-                    "author": humanize_list(repo.author) if repo.author else "Unknown",
-                    "description": repo.description,
-                    "current_commit": await repo.current_commit(),
-                    "available_cogs": dict(
-                        sorted(
-                            {
-                                cog.name: {
-                                    "installed": (
-                                        installed := discord.utils.get(
-                                            await Downloader.installed_cogs(),
-                                            repo_name=repo.name,
-                                            name=cog.name,
-                                        )
-                                    )
-                                    is not None,
-                                    "pinned": installed.pinned if installed is not None else False,
-                                    "hidden": cog.hidden,
-                                    "short_description": cog.short,
-                                    "description": cog.description,
-                                    "author": humanize_list(cog.author) if cog.author else None,
-                                    "tags": humanize_list([inline(tag) for tag in cog.tags]),
-                                    "requirements": humanize_list(
-                                        [inline(req) for req in cog.requirements]
-                                    ),
-                                    "end_user_data_statement": cog.end_user_data_statement,
-                                }
-                                for cog in repo.available_cogs
-                                if not cog.disabled
-                            }.items(),
-                            key=lambda cog: (
-                                not cog[1]["installed"],
-                                cog[1]["hidden"],
-                                cog[0].lower(),
-                            ),
-                        )
-                    ),
-                }
-                for repo in sorted(
-                    Downloader._repo_manager.repos,
-                    key=lambda repo: repo.name.lower(),
-                )
-            ],
+            "repos": repo_data,
         }
 
     @rpc_check()
